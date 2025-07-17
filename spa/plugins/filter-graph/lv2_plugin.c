@@ -92,15 +92,16 @@ struct context {
 	LilvNode *lv2_OutputPort;
 	LilvNode *lv2_AudioPort;
 	LilvNode *lv2_ControlPort;
-	LilvNode *lv2_Optional;
+	LilvNode *lv2_connectionOptional;
 	LilvNode *atom_AtomPort;
 	LilvNode *atom_Sequence;
 	LilvNode *urid_map;
-	LilvNode *powerOf2BlockLength;
-	LilvNode *fixedBlockLength;
-	LilvNode *boundedBlockLength;
-	LilvNode* worker_schedule;
-	LilvNode* worker_iface;
+	LilvNode *buf_size_powerOf2BlockLength;
+	LilvNode *buf_size_fixedBlockLength;
+	LilvNode *buf_size_boundedBlockLength;
+	LilvNode *worker_schedule;
+	LilvNode *worker_interface;
+	LilvNode *state_interface;
 
 	URITable uri_table;
 	LV2_URID_Map map;
@@ -108,8 +109,8 @@ struct context {
 	LV2_URID_Unmap unmap;
 	LV2_Feature unmap_feature;
 
-	LV2_URID atom_Int;
-	LV2_URID atom_Float;
+	LV2_URID atom_Int_ID;
+	LV2_URID atom_Float_ID;
 };
 
 #define context_map(c,uri) ((c)->map.map((c)->map.handle,(uri)))
@@ -118,13 +119,13 @@ static void context_free(struct context *c)
 {
 	if (c->world) {
 		lilv_node_free(c->worker_schedule);
-		lilv_node_free(c->powerOf2BlockLength);
-		lilv_node_free(c->fixedBlockLength);
-		lilv_node_free(c->boundedBlockLength);
+		lilv_node_free(c->buf_size_powerOf2BlockLength);
+		lilv_node_free(c->buf_size_fixedBlockLength);
+		lilv_node_free(c->buf_size_boundedBlockLength);
 		lilv_node_free(c->urid_map);
 		lilv_node_free(c->atom_Sequence);
 		lilv_node_free(c->atom_AtomPort);
-		lilv_node_free(c->lv2_Optional);
+		lilv_node_free(c->lv2_connectionOptional);
 		lilv_node_free(c->lv2_ControlPort);
 		lilv_node_free(c->lv2_AudioPort);
 		lilv_node_free(c->lv2_OutputPort);
@@ -160,15 +161,15 @@ static struct context *context_new(void)
 	c->lv2_OutputPort = lilv_new_uri(c->world, LV2_CORE__OutputPort);
 	c->lv2_AudioPort = lilv_new_uri(c->world, LV2_CORE__AudioPort);
 	c->lv2_ControlPort = lilv_new_uri(c->world, LV2_CORE__ControlPort);
-	c->lv2_Optional = lilv_new_uri(c->world, LV2_CORE__connectionOptional);
+	c->lv2_connectionOptional = lilv_new_uri(c->world, LV2_CORE__connectionOptional);
 	c->atom_AtomPort = lilv_new_uri(c->world, LV2_ATOM__AtomPort);
 	c->atom_Sequence = lilv_new_uri(c->world, LV2_ATOM__Sequence);
 	c->urid_map = lilv_new_uri(c->world, LV2_URID__map);
-	c->powerOf2BlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__powerOf2BlockLength);
-	c->fixedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__fixedBlockLength);
-	c->boundedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__boundedBlockLength);
+	c->buf_size_powerOf2BlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__powerOf2BlockLength);
+	c->buf_size_fixedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__fixedBlockLength);
+	c->buf_size_boundedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__boundedBlockLength);
         c->worker_schedule = lilv_new_uri(c->world, LV2_WORKER__schedule);
-	c->worker_iface = lilv_new_uri(c->world, LV2_WORKER__interface);
+	c->worker_interface = lilv_new_uri(c->world, LV2_WORKER__interface);
 
 	c->map.handle = &c->uri_table;
 	c->map.map = uri_table_map;
@@ -179,8 +180,8 @@ static struct context *context_new(void)
 	c->unmap_feature.URI = LV2_URID_UNMAP_URI;
 	c->unmap_feature.data = &c->unmap;
 
-	c->atom_Int = context_map(c, LV2_ATOM__Int);
-	c->atom_Float = context_map(c, LV2_ATOM__Float);
+	c->atom_Int_ID = context_map(c, LV2_ATOM__Int);
+	c->atom_Float_ID = context_map(c, LV2_ATOM__Float);
 
 	return c;
 error:
@@ -313,19 +314,19 @@ static void *lv2_instantiate(const struct spa_fga_plugin *plugin, const struct s
 
 	i->options[0] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, LV2_BUF_SIZE__minBlockLength), sizeof(int32_t),
-		c->atom_Int, &min_block_length };
+		c->atom_Int_ID, &min_block_length };
 	i->options[1] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, LV2_BUF_SIZE__maxBlockLength), sizeof(int32_t),
-		c->atom_Int, &max_block_length };
+		c->atom_Int_ID, &max_block_length };
 	i->options[2] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, LV2_BUF_SIZE__sequenceSize), sizeof(int32_t),
-		c->atom_Int, &seq_size };
+		c->atom_Int_ID, &seq_size };
 	i->options[3] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, "http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"), sizeof(int32_t),
-		c->atom_Int, &i->block_length },
+		c->atom_Int_ID, &i->block_length },
 	i->options[4] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, LV2_PARAMETERS__sampleRate), sizeof(float),
-		c->atom_Float, &fsample_rate };
+		c->atom_Float_ID, &fsample_rate };
 	i->options[5] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL };
 
 	i->options_feature.URI = LV2_OPTIONS__options;
@@ -339,7 +340,7 @@ static void *lv2_instantiate(const struct spa_fga_plugin *plugin, const struct s
 		free(i);
 		return NULL;
 	}
-	if (lilv_plugin_has_extension_data(p->p, c->worker_iface)) {
+	if (lilv_plugin_has_extension_data(p->p, c->worker_interface)) {
                 i->work_iface = (const LV2_Worker_Interface*)
 			lilv_instance_get_extension_data(i->instance, LV2_WORKER__interface);
         }
