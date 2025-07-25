@@ -18,22 +18,26 @@
 #	if __has_include (<lv2/atom/atom.h>)
 
 		#include <lv2/atom/atom.h>
+		#include <lv2/atom/forge.h>
 		#include <lv2/buf-size/buf-size.h>
 		#include <lv2/worker/worker.h>
 		#include <lv2/state/state.h>
 		#include <lv2/options/options.h>
 		#include <lv2/parameters/parameters.h>
 		#include <lv2/log/log.h>
+		#include <lv2/patch/patch.h>
 
 #	else
 
 		#include <lv2/lv2plug.in/ns/ext/atom/atom.h>
+		#include <lv2/lv2plug.in/ns/ext/atom/forge.h>
 		#include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 		#include <lv2/lv2plug.in/ns/ext/worker/worker.h>
 		#include <lv2/lv2plug.in/ns/ext/state/state.h>
 		#include <lv2/lv2plug.in/ns/ext/options/options.h>
 		#include <lv2/lv2plug.in/ns/ext/parameters/parameters.h>
 		#include <lv2/lv2plug.in/ns/ext/log/log.h>
+		#include <lv2/lv2plug.in/ns/ext/patch/patch.h>
 
 #	endif
 
@@ -97,10 +101,17 @@ struct context {
 	LilvNode *lv2_OutputPort;
 	LilvNode *lv2_AudioPort;
 	LilvNode *lv2_ControlPort;
+	LilvNode *lv2_control;
+	LilvNode *lv2_minimum;
+	LilvNode *lv2_maximum;
+	LilvNode *lv2_default;
 	LilvNode *lv2_connectionOptional;
 	LilvNode *atom_AtomPort;
 	LilvNode *atom_Sequence;
 	LilvNode *urid_map;
+	LilvNode *patch_Set;
+	LilvNode *patch_property;
+	LilvNode *patch_value;
 	LilvNode *buf_size_powerOf2BlockLength;
 	LilvNode *buf_size_fixedBlockLength;
 	LilvNode *buf_size_boundedBlockLength;
@@ -114,8 +125,14 @@ struct context {
 	LV2_URID_Unmap unmap;
 	LV2_Feature unmap_feature;
 
+	LV2_Atom_Forge forge;
+	
 	LV2_URID atom_Int_ID;
 	LV2_URID atom_Float_ID;
+	LV2_URID atom_Sequence_ID;
+	LV2_URID patch_Set_ID;
+	LV2_URID patch_property_ID;
+	LV2_URID patch_value_ID;
 };
 
 #define context_map(c,uri) ((c)->map.map((c)->map.handle,(uri)))
@@ -131,6 +148,7 @@ static void context_free(struct context *c)
 		lilv_node_free(c->atom_Sequence);
 		lilv_node_free(c->atom_AtomPort);
 		lilv_node_free(c->lv2_connectionOptional);
+		lilv_node_free(c->lv2_control);
 		lilv_node_free(c->lv2_ControlPort);
 		lilv_node_free(c->lv2_AudioPort);
 		lilv_node_free(c->lv2_OutputPort);
@@ -166,10 +184,17 @@ static struct context *context_new(void)
 	c->lv2_OutputPort = lilv_new_uri(c->world, LV2_CORE__OutputPort);
 	c->lv2_AudioPort = lilv_new_uri(c->world, LV2_CORE__AudioPort);
 	c->lv2_ControlPort = lilv_new_uri(c->world, LV2_CORE__ControlPort);
+	c->lv2_control = lilv_new_uri(c->world, LV2_CORE__control);
+	c->lv2_minimum = lilv_new_uri(c->world, LV2_CORE__minimum);
+	c->lv2_maximum = lilv_new_uri(c->world, LV2_CORE__maximum);
+	c->lv2_default = lilv_new_uri(c->world, LV2_CORE__default);
 	c->lv2_connectionOptional = lilv_new_uri(c->world, LV2_CORE__connectionOptional);
 	c->atom_AtomPort = lilv_new_uri(c->world, LV2_ATOM__AtomPort);
 	c->atom_Sequence = lilv_new_uri(c->world, LV2_ATOM__Sequence);
 	c->urid_map = lilv_new_uri(c->world, LV2_URID__map);
+	c->patch_Set = lilv_new_uri(c->world, LV2_PATCH__Set);
+	c->patch_property = lilv_new_uri(c->world, LV2_PATCH__property);
+	c->patch_value = lilv_new_uri(c->world, LV2_PATCH__value);
 	c->buf_size_powerOf2BlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__powerOf2BlockLength);
 	c->buf_size_fixedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__fixedBlockLength);
 	c->buf_size_boundedBlockLength = lilv_new_uri(c->world, LV2_BUF_SIZE__boundedBlockLength);
@@ -186,8 +211,14 @@ static struct context *context_new(void)
 	c->unmap_feature.URI = LV2_URID__unmap;
 	c->unmap_feature.data = &c->unmap;
 
+	lv2_atom_forge_init(&c->forge, &c->map);
+
 	c->atom_Int_ID = context_map(c, LV2_ATOM__Int);
 	c->atom_Float_ID = context_map(c, LV2_ATOM__Float);
+	c->atom_Sequence_ID = context_map(c, LV2_ATOM__Sequence);
+	c->patch_Set_ID = context_map(c, LV2_PATCH__Set);
+	c->patch_property_ID = context_map(c, LV2_PATCH__property);
+	c->patch_value_ID = context_map(c, LV2_PATCH__value);
 
 	return c;
 error:
@@ -229,6 +260,9 @@ struct plugin {
 struct descriptor {
 	struct spa_fga_descriptor desc;
 	struct plugin *p;
+
+	uint32_t n_regular_ports;
+	uint32_t n_property_ports;
 };
 
 struct instance {
@@ -250,6 +284,14 @@ struct instance {
 
 	int32_t block_length;
 	LV2_Atom empty_atom;
+
+	struct control_port_endpoint *control_port_endpoint;
+};
+
+struct control_port_endpoint {
+	float **new_values;
+	float *old_values;
+	LV2_Atom_Sequence seq;
 };
 
 static int
@@ -370,6 +412,7 @@ static void *lv2_instantiate(const struct spa_fga_plugin *plugin, const struct s
 	static const int32_t max_block_length = 8192;
 	static const int32_t seq_size = 32768;
 	float fsample_rate = SampleRate;
+	const LilvPort *control_port = lilv_plugin_get_port_by_designation(p->p, c->lv2_InputPort, c->lv2_control);
 
 	i = calloc(1, sizeof(*i));
 	if (i == NULL)
@@ -408,7 +451,7 @@ static void *lv2_instantiate(const struct spa_fga_plugin *plugin, const struct s
 		c->atom_Int_ID, &seq_size };
 	i->options[3] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, "http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"), sizeof(int32_t),
-		c->atom_Int_ID, &i->block_length },
+		c->atom_Int_ID, &i->block_length };
 	i->options[4] = (LV2_Options_Option) { LV2_OPTIONS_INSTANCE, 0,
 		context_map(c, LV2_PARAMETERS__sampleRate), sizeof(float),
 		c->atom_Float_ID, &fsample_rate };
@@ -433,7 +476,25 @@ static void *lv2_instantiate(const struct spa_fga_plugin *plugin, const struct s
                 i->state_iface = (const LV2_State_Interface*)
 			lilv_instance_get_extension_data(i->instance, LV2_STATE__interface);
         }
+
+	if (control_port != NULL) {
+		i->control_port_endpoint = calloc(1, sizeof(struct control_port_endpoint) + seq_size);
+		i->control_port_endpoint->new_values = calloc(d->n_property_ports, sizeof(float*));
+		i->control_port_endpoint->old_values = calloc(d->n_property_ports, sizeof(float));
+		i->control_port_endpoint->seq = (LV2_Atom_Sequence) {
+			.atom = (LV2_Atom) {
+				.size = sizeof(LV2_Atom_Sequence_Body),
+				.type = c->atom_Sequence_ID,
+			},
+		};
+		lilv_instance_connect_port(i->instance, lilv_port_get_index(p->p, control_port), &i->control_port_endpoint->seq);
+	}
+	
 	for (n = 0; n < desc->n_ports; n++) {
+		if (n >= lilv_plugin_get_num_ports(p->p)) {
+			lilv_instance_connect_port(i->instance, lilv_port_get_index(p->p, control_port), &i->control_port_endpoint->seq);
+			continue;
+		}
 		const LilvPort *port = lilv_plugin_get_port_by_index(p->p, n);
 		if (lilv_port_is_a(p->p, port, c->atom_AtomPort)) {
 			lilv_instance_connect_port(i->instance, n, &i->empty_atom);
@@ -454,13 +515,75 @@ static void lv2_cleanup(void *instance)
 	spa_loop_invoke(i->p->data_loop, NULL, 0, NULL, 0, true, NULL);
 	spa_loop_invoke(i->p->main_loop, NULL, 0, NULL, 0, true, NULL);
 	lilv_instance_free(i->instance);
+	if (i->control_port_endpoint != NULL) {
+		free(i->control_port_endpoint->old_values);
+		free(i->control_port_endpoint->new_values);
+		free(i->control_port_endpoint);
+	}
 	free(i);
 }
 
 static void lv2_connect_port(void *instance, unsigned long port, float *data)
 {
 	struct instance *i = instance;
+	struct descriptor *d = i->desc;
+	struct plugin *p = i->p;
 	lilv_instance_connect_port(i->instance, port, data);
+	
+	if (port >= d->n_regular_ports) {
+		const uint32_t value_buffer_index = port - d->n_regular_ports;
+		spa_log_info(p->log, "connected atom port at value buffer index %d", value_buffer_index);
+		i->control_port_endpoint->new_values[value_buffer_index] = data;
+		lilv_instance_connect_port(i->instance, port, &i->control_port_endpoint->seq);
+	}
+}
+
+static void lv2_control_changed(void *instance)
+{
+	struct instance *i = instance;
+	struct descriptor *d = i->desc;
+	struct plugin *p = i->p;
+	struct context *c = p->c;
+
+	for (uint32_t prop_port_index = d->n_regular_ports; prop_port_index < d->desc.n_ports; prop_port_index++) {
+		const char *plugin_name = lilv_node_as_string(lilv_plugin_get_uri(p->p));
+		const char *delimiter = ":";
+		const char *property_name = d->desc.ports[prop_port_index].name;
+		char *full_property_name = alloca(strlen(plugin_name) + strlen(delimiter) + strlen(property_name) + 1);
+		const uint32_t value_buffer_index = prop_port_index - d->n_regular_ports;
+		strcpy(full_property_name, plugin_name);
+		strcat(full_property_name, delimiter);
+		strcat(full_property_name, property_name);
+		LV2_URID property_id = c->map.map(c->map.handle, full_property_name);
+
+		if (*i->control_port_endpoint->new_values[value_buffer_index]
+			!= i->control_port_endpoint->old_values[value_buffer_index]) {
+			spa_log_info(p->log, "atom control changed: %f -> %f at value buffer index %d for property %s with URID %d",
+				i->control_port_endpoint->old_values[value_buffer_index],
+				*i->control_port_endpoint->new_values[value_buffer_index],
+				value_buffer_index, full_property_name, property_id);
+
+			uint8_t *buffer = alloca(1024);
+			LV2_Atom_Forge_Frame frame;
+			lv2_atom_forge_set_buffer(&c->forge, buffer, 1024);
+
+			lv2_atom_forge_object(&c->forge, &frame, 0, c->patch_Set_ID);
+			lv2_atom_forge_key(&c->forge, c->patch_property_ID);
+			lv2_atom_forge_urid(&c->forge, property_id);
+			lv2_atom_forge_key(&c->forge, c->patch_value_ID);
+			lv2_atom_forge_atom(&c->forge, sizeof(float), c->atom_Float_ID);
+			lv2_atom_forge_write(&c->forge, i->control_port_endpoint->new_values[value_buffer_index], sizeof(float));
+			const LV2_Atom *atom = lv2_atom_forge_deref(&c->forge, frame.ref);
+			
+			LV2_Atom_Event *event = alloca(sizeof(LV2_Atom_Event) + lv2_atom_total_size(atom));
+			event->time.frames = 0;
+			memcpy(&event->body, atom, lv2_atom_total_size(atom));
+
+			lv2_atom_sequence_append_event(&i->control_port_endpoint->seq, 32768, event);
+
+			i->control_port_endpoint->old_values[value_buffer_index] = *i->control_port_endpoint->new_values[value_buffer_index];
+		}
+	}
 }
 
 static void lv2_activate(void *instance)
@@ -481,6 +604,8 @@ static void lv2_run(void *instance, unsigned long SampleCount)
 	lilv_instance_run(i->instance, SampleCount);
 	if (i->work_iface != NULL && i->work_iface->end_run != NULL)
 		i->work_iface->end_run(i->instance);
+	if (i->control_port_endpoint != NULL)
+		lv2_atom_sequence_clear(&i->control_port_endpoint->seq);
 }
 
 static void lv2_free(const struct spa_fga_descriptor *desc)
@@ -512,6 +637,7 @@ static const struct spa_fga_descriptor *lv2_plugin_make_desc(void *plugin, const
 	desc->desc.instantiate = lv2_instantiate;
 	desc->desc.cleanup = lv2_cleanup;
 	desc->desc.connect_port = lv2_connect_port;
+	desc->desc.control_changed = lv2_control_changed;
 	desc->desc.activate = lv2_activate;
 	desc->desc.deactivate = lv2_deactivate;
 	desc->desc.run = lv2_run;
@@ -521,7 +647,13 @@ static const struct spa_fga_descriptor *lv2_plugin_make_desc(void *plugin, const
 	desc->desc.name = strdup(name);
 	desc->desc.flags = 0;
 
-	desc->desc.n_ports = lilv_plugin_get_num_ports(p->p);
+	desc->n_regular_ports = lilv_plugin_get_num_ports(p->p);
+	desc->n_property_ports = lilv_nodes_size(
+		lilv_world_find_nodes(c->world,
+			lilv_plugin_get_uri(p->p),
+			lilv_new_uri(c->world, LV2_PATCH__writable),
+			NULL));
+	desc->desc.n_ports = desc->n_regular_ports + desc->n_property_ports;
 	desc->desc.ports = calloc(desc->desc.n_ports, sizeof(struct spa_fga_port));
 
 	mins = alloca(desc->desc.n_ports * sizeof(float));
@@ -533,7 +665,7 @@ static const struct spa_fga_descriptor *lv2_plugin_make_desc(void *plugin, const
 
 	lilv_plugin_get_port_ranges_float(p->p, mins, maxes, controls);
 
-	for (i = 0; i < desc->desc.n_ports; i++) {
+	for (i = 0; i < desc->n_regular_ports; i++) {
 		const LilvPort *port = lilv_plugin_get_port_by_index(p->p, i);
                 const LilvNode *symbol = lilv_port_get_symbol(p->p, port);
 		struct spa_fga_port *fp = &desc->desc.ports[i];
@@ -558,6 +690,35 @@ static const struct spa_fga_descriptor *lv2_plugin_make_desc(void *plugin, const
 		fp->min = mins[i];
 		fp->max = maxes[i];
 		fp->def = controls[i];
+		spa_log_info(p->log, "registered regular control port: %20s", desc->desc.ports[i].name);
+	}
+
+	LilvNodes *properties = lilv_world_find_nodes(c->world,
+		lilv_plugin_get_uri(p->p),
+		lilv_new_uri(c->world, LV2_PATCH__writable),
+		NULL);
+	i = desc->n_regular_ports;
+
+	LILV_FOREACH(nodes, it, properties) {
+		struct spa_fga_port *fp = &desc->desc.ports[i++];
+		const LilvNode *property = lilv_nodes_get(properties, it);
+		const char *short_name = strrchr(lilv_node_as_string(property), ':');
+		if (short_name == NULL) {
+			spa_log_error(p->log, "failed to extract port info for property %s", lilv_node_as_string(property));
+			continue;
+		}
+		
+		fp->name = strdup(short_name + 1);
+		fp->flags = SPA_FGA_PORT_INPUT | SPA_FGA_PORT_CONTROL;
+		fp->hint = 0;
+
+		fp->min = lilv_node_as_float(lilv_world_get(c->world, property, c->lv2_minimum, NULL));
+		fp->max = lilv_node_as_float(lilv_world_get(c->world, property, c->lv2_maximum, NULL));
+		fp->def = lilv_node_as_float(lilv_world_get(c->world, property, c->lv2_default, NULL));
+
+		fp->index = context_map(c, lilv_node_as_uri(property));
+		spa_log_info(p->log, "registered property control port: %16s\t(min:\t% 3.5f\tmax:\t% 3.5f\tdef:\t% 3.5f)",
+			fp->name, fp->min, fp->max, fp->def);
 	}
 	return &desc->desc;
 }
